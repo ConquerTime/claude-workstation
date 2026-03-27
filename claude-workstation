@@ -1,0 +1,220 @@
+#!/usr/bin/env bash
+# claude-workstation — Multi-pane tmux launcher for Claude Code
+#
+# Usage:
+#   claude-workstation              # Interactive project picker
+#   claude-workstation myproject    # Launch or reattach project
+#   claude-workstation myproject --new  # Force new session
+#   claude-workstation --list       # List configured projects
+#   claude-workstation --status     # Show active sessions
+#   claude-workstation --kill myproject  # Terminate session
+#
+# Dependencies: tmux, yq (brew install yq)
+
+set -euo pipefail
+
+CONFIG="${CLAUDE_WORKSTATION_CONFIG:-$HOME/.config/claude-workstation/projects.yaml}"
+
+if [[ ! -f "$CONFIG" ]]; then
+  echo "Config file not found: $CONFIG"
+  echo "Create one: mkdir -p ~/.config/claude-workstation && cp examples/projects.yaml $CONFIG"
+  exit 1
+fi
+
+command -v yq &>/dev/null || { echo "yq is required: brew install yq"; exit 1; }
+command -v tmux &>/dev/null || { echo "tmux is required: brew install tmux"; exit 1; }
+
+SESSION_PREFIX="cw"
+
+# ============================================================
+# Parse arguments
+# ============================================================
+PROJECT_NAME=""
+NEW_SESSION=false
+KILL_TARGET=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --new) NEW_SESSION=true ;;
+    --kill)
+      shift
+      [[ $# -eq 0 ]] && echo "--kill requires a project name" && exit 1
+      KILL_TARGET="$1"
+      ;;
+    --status|-s)
+      echo "Active workstation sessions:"
+      tmux list-sessions -F "#{session_name}  #{session_windows} windows  created #{session_created_string}" 2>/dev/null \
+        | grep "^${SESSION_PREFIX}-" \
+        | sed "s/^${SESSION_PREFIX}-/  /" \
+        || echo "  (none)"
+      exit 0 ;;
+    --list|-l)
+      echo "Available projects:"
+      yq -r '.projects | to_entries[] | "  " + .key + "\t" + .value.desc + " (" + (.value.windows | length | tostring) + " panes)"' "$CONFIG"
+      exit 0 ;;
+    --help|-h)
+      cat <<'EOF'
+Usage: claude-workstation [project] [options]
+
+  (no args)       Interactive project picker
+  project         Launch or reattach (if tmux session exists)
+  --new           Force new session (kills existing one)
+  --list,-l       List all configured projects
+  --status,-s     Show active workstation sessions
+  --kill project  Terminate a project's session
+  --help,-h       Show this help
+
+tmux navigation (default prefix: Ctrl+B):
+  prefix D        Detach (session stays in background)
+  prefix O        Cycle through panes
+  prefix Z        Zoom/unzoom current pane
+  prefix Q        Show pane numbers
+EOF
+      exit 0 ;;
+    -*) echo "Unknown option: $1 (use --help)" && exit 1 ;;
+    *) PROJECT_NAME="$1" ;;
+  esac
+  shift
+done
+
+# --kill handling
+if [[ -n "$KILL_TARGET" ]]; then
+  session_name="${SESSION_PREFIX}-${KILL_TARGET}"
+  if tmux has-session -t "$session_name" 2>/dev/null; then
+    tmux kill-session -t "$session_name"
+    echo "Terminated: $KILL_TARGET"
+  else
+    echo "Session not found: $KILL_TARGET"
+  fi
+  exit 0
+fi
+
+# ============================================================
+# Project selection
+# ============================================================
+NAMES=($(yq -r '.projects | keys[]' "$CONFIG"))
+[[ ${#NAMES[@]} -eq 0 ]] && echo "No projects in config" && exit 1
+
+if [[ -z "$PROJECT_NAME" ]]; then
+  echo "Available projects:"
+  echo ""
+  for i in "${!NAMES[@]}"; do
+    name="${NAMES[$i]}"
+    desc=$(yq -r ".projects.\"$name\".desc" "$CONFIG")
+    pane_count=$(yq -r ".projects.\"$name\".windows | length" "$CONFIG")
+    status=""
+    tmux has-session -t "${SESSION_PREFIX}-${name}" 2>/dev/null && status=" [running]"
+    printf "  %d) %-12s %s (%d panes)%s\n" $((i+1)) "$name" "$desc" "$pane_count" "$status"
+  done
+  echo ""
+  read -rp "Select [1-${#NAMES[@]}]: " choice
+  if [[ ! "$choice" =~ ^[0-9]+$ ]] || (( choice < 1 || choice > ${#NAMES[@]} )); then
+    echo "Invalid selection" && exit 1
+  fi
+  PROJECT_NAME="${NAMES[$((choice-1))]}"
+fi
+
+yq -e ".projects.\"$PROJECT_NAME\"" "$CONFIG" &>/dev/null || {
+  echo "Unknown project: $PROJECT_NAME (available: ${NAMES[*]})" && exit 1
+}
+
+# ============================================================
+# Session name
+# ============================================================
+SESSION_NAME="${SESSION_PREFIX}-${PROJECT_NAME}"
+
+# ============================================================
+# Existing session → reattach
+# ============================================================
+if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+  if [[ "$NEW_SESSION" == true ]]; then
+    tmux kill-session -t "$SESSION_NAME"
+    echo "Killed old session, rebuilding..."
+  else
+    echo "Reattaching: $PROJECT_NAME"
+    exec tmux attach -t "$SESSION_NAME"
+  fi
+fi
+
+# ============================================================
+# Create new session
+# ============================================================
+PROJECT_DIR=$(yq -r ".projects.\"$PROJECT_NAME\".dir" "$CONFIG")
+PROJECT_DIR="${PROJECT_DIR/#\~/$HOME}"
+PANE_COUNT=$(yq -r ".projects.\"$PROJECT_NAME\".windows | length" "$CONFIG")
+
+# Collect pane configs
+PANE_NAMES=()
+PANE_MODELS=()
+PANE_DIRS=()
+
+for ((i=0; i<PANE_COUNT; i++)); do
+  p_name=$(yq -r ".projects.\"$PROJECT_NAME\".windows[$i].name" "$CONFIG")
+  p_model=$(yq -r ".projects.\"$PROJECT_NAME\".windows[$i].model" "$CONFIG")
+  p_dir=$(yq -r ".projects.\"$PROJECT_NAME\".windows[$i].dir // \"\"" "$CONFIG")
+  [[ -z "$p_dir" ]] && p_dir="$PROJECT_DIR"
+  p_dir="${p_dir/#\~/$HOME}"
+  PANE_NAMES+=("$p_name")
+  PANE_MODELS+=("$p_model")
+  PANE_DIRS+=("$p_dir")
+done
+
+# Create tmux session (first pane)
+tmux new-session -d -s "$SESSION_NAME" -c "${PANE_DIRS[0]}" -x "$(tput cols)" -y "$(tput lines)"
+
+# Prevent apps from overriding pane/window titles
+tmux set-option -t "$SESSION_NAME" allow-rename off
+tmux set-window-option -t "$SESSION_NAME" automatic-rename off
+
+# Two-row N-column layout: top row = first half, bottom row = second half
+top_count=$(( (PANE_COUNT + 1) / 2 ))
+bottom_count=$(( PANE_COUNT - top_count ))
+
+# Step 1: Create top row columns (split-h), then equalize
+for ((i=1; i<top_count; i++)); do
+  tmux split-window -h -t "${SESSION_NAME}:1" -c "${PANE_DIRS[$i]}"
+  tmux select-layout -t "${SESSION_NAME}:1" even-horizontal
+done
+
+# Step 2: Split bottom row from last column to first (avoids index shift)
+for ((i=bottom_count-1; i>=0; i--)); do
+  top_pane_idx=$((i+1))
+  src_idx=$((top_count + i))
+  tmux split-window -v -t "${SESSION_NAME}:1.${top_pane_idx}" -c "${PANE_DIRS[$src_idx]}"
+done
+
+# Step 3: Map config index → actual tmux pane index
+# After split-v from back to front, panes interleave: top1, bottom1, top2, bottom2, ...
+PANE_MAP=()
+pane_cursor=1
+for ((col=0; col<top_count; col++)); do
+  PANE_MAP[$col]=$pane_cursor
+  ((pane_cursor++))
+  if (( col < bottom_count )); then
+    PANE_MAP[$((top_count + col))]=$pane_cursor
+    ((pane_cursor++))
+  fi
+done
+
+# Launch Claude Code in each pane
+for ((i=0; i<PANE_COUNT; i++)); do
+  tmux send-keys -t "${SESSION_NAME}:1.${PANE_MAP[$i]}" "claude --model ${PANE_MODELS[$i]} --name '${PANE_NAMES[$i]}'" C-m
+done
+
+# Set @label on each pane (immune to app title overrides)
+for ((i=0; i<PANE_COUNT; i++)); do
+  tmux set-option -p -t "${SESSION_NAME}:1.${PANE_MAP[$i]}" @label "${PANE_NAMES[$i]}"
+done
+
+# Display pane labels in border
+tmux set-window-option -t "$SESSION_NAME" pane-border-status top
+tmux set-window-option -t "$SESSION_NAME" pane-border-format " #[fg=cyan,bold]#{@label}#[default] "
+
+# Focus first pane
+tmux select-pane -t "${SESSION_NAME}:1.1"
+
+DESC=$(yq -r ".projects.\"$PROJECT_NAME\".desc" "$CONFIG")
+echo "Workstation ready: $PROJECT_NAME — $DESC ($PANE_COUNT panes, ${top_count}x2 grid)"
+
+# Attach
+exec tmux attach -t "$SESSION_NAME"

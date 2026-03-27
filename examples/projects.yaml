@@ -1,0 +1,59 @@
+# Claude Code Workstation - Project Configuration
+#
+# Each project defines a set of Claude Code instances that launch
+# together in a tmux session with a two-row grid layout.
+#
+# Fields:
+#   desc     - Short description (shown in project picker)
+#   dir      - Default working directory for all panes
+#   windows  - List of Claude Code instances
+#     name   - Display name (shown in pane border, and in Claude's /resume list)
+#     model  - Claude model: opus, sonnet, or haiku
+#     dir    - (optional) Override working directory for this pane
+#
+
+projects:
+  # Example: Full-stack web app with 4 agents
+  webapp:
+    desc: "Full-stack web app"
+    dir: ~/projects/my-webapp
+    windows:
+      - name: Planner
+        model: opus
+      - name: Backend
+        model: sonnet
+      - name: Frontend
+        model: sonnet
+      - name: Reviewer
+        model: opus
+
+  # Example: Monorepo with agents in different subdirectories
+  monorepo:
+    desc: "Monorepo multi-package"
+    dir: ~/projects/my-monorepo
+    windows:
+      - name: Architect
+        model: opus
+      - name: API
+        model: sonnet
+        dir: ~/projects/my-monorepo/packages/api
+      - name: Web
+        model: sonnet
+        dir: ~/projects/my-monorepo/packages/web
+      - name: Shared
+        model: sonnet
+        dir: ~/projects/my-monorepo/packages/shared
+      - name: DevOps
+        model: haiku
+      - name: Reviewer
+        model: opus
+
+  # Example: Minimal setup — just 2 panes
+  side-project:
+    desc: "Quick side project"
+    dir: ~/projects/side-project
+    windows:
+      - name: Dev
+        model: sonnet
+      - name: Review
+        model: opus
