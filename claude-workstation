@@ -147,16 +147,23 @@ PANE_COUNT=$(yq -r ".projects.\"$PROJECT_NAME\".windows | length" "$CONFIG")
 PANE_NAMES=()
 PANE_MODELS=()
 PANE_DIRS=()
+PANE_SKIP_PERMS=()
+
+# Project-level default for skip_permissions (true unless explicitly set to false)
+PROJECT_SKIP_PERMS=$(yq -r ".projects.\"$PROJECT_NAME\".skip_permissions // true" "$CONFIG")
 
 for ((i=0; i<PANE_COUNT; i++)); do
   p_name=$(yq -r ".projects.\"$PROJECT_NAME\".windows[$i].name" "$CONFIG")
   p_model=$(yq -r ".projects.\"$PROJECT_NAME\".windows[$i].model" "$CONFIG")
   p_dir=$(yq -r ".projects.\"$PROJECT_NAME\".windows[$i].dir // \"\"" "$CONFIG")
+  p_skip=$(yq -r ".projects.\"$PROJECT_NAME\".windows[$i].skip_permissions // \"\"" "$CONFIG")
   [[ -z "$p_dir" ]] && p_dir="$PROJECT_DIR"
   p_dir="${p_dir/#\~/$HOME}"
+  [[ -z "$p_skip" ]] && p_skip="$PROJECT_SKIP_PERMS"
   PANE_NAMES+=("$p_name")
   PANE_MODELS+=("$p_model")
   PANE_DIRS+=("$p_dir")
+  PANE_SKIP_PERMS+=("$p_skip")
 done
 
 # Create tmux session (first pane)
@@ -201,7 +208,9 @@ done
 
 # Launch Claude Code in each pane
 for ((i=0; i<PANE_COUNT; i++)); do
-  tmux send-keys -t "${SESSION_NAME}:1.${PANE_MAP[$i]}" "claude --model ${PANE_MODELS[$i]} --name '${PANE_NAMES[$i]}'" C-m
+  cmd="claude --model ${PANE_MODELS[$i]} --name '${PANE_NAMES[$i]}'"
+  [[ "${PANE_SKIP_PERMS[$i]}" == "true" ]] && cmd="$cmd --dangerously-skip-permissions"
+  tmux send-keys -t "${SESSION_NAME}:1.${PANE_MAP[$i]}" "$cmd" C-m
 done
 
 # Set @label on each pane (immune to app title overrides)

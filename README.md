@@ -100,10 +100,12 @@ projects:
 |-------|----------|-------------|
 | `desc` | Yes | Short description shown in the project picker |
 | `dir` | Yes | Default working directory for all panes |
+| `skip_permissions` | No | Pass `--dangerously-skip-permissions` to all panes (default: `true`) |
 | `windows` | Yes | List of Claude Code instances |
 | `windows[].name` | Yes | Pane label (shown in border + Claude's `/resume` list) |
 | `windows[].model` | Yes | Claude model: `opus`, `sonnet`, or `haiku` |
 | `windows[].dir` | No | Override working directory for this specific pane |
+| `windows[].skip_permissions` | No | Override `skip_permissions` for this specific pane |
 
 ### Per-pane directory override
 
