@@ -1,0 +1,29 @@
+{
+  "name": "claude-workstation",
+  "version": "1.0.0",
+  "description": "One command to launch multiple Claude Code instances in a tmux session",
+  "bin": {
+    "claude-workstation": "./bin/claude-workstation.js"
+  },
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js"
+  },
+  "files": [
+    "bin/",
+    "scripts/",
+    "claude-workstation",
+    "examples/"
+  ],
+  "keywords": [
+    "claude",
+    "claude-code",
+    "tmux",
+    "ai",
+    "anthropic"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=16"
+  }
+}

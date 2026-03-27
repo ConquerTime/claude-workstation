@@ -162,6 +162,9 @@ done
 # Create tmux session (first pane)
 tmux new-session -d -s "$SESSION_NAME" -c "${PANE_DIRS[0]}" -x "$(tput cols)" -y "$(tput lines)"
 
+# Enable mouse support
+tmux set-option -t "$SESSION_NAME" mouse on
+
 # Prevent apps from overriding pane/window titles
 tmux set-option -t "$SESSION_NAME" allow-rename off
 tmux set-window-option -t "$SESSION_NAME" automatic-rename off

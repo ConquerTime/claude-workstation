@@ -37,18 +37,33 @@ claude-workstation solves this:
 - [yq](https://github.com/mikefarah/yq) (`brew install yq`)
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`npm install -g @anthropic-ai/claude-code`)
 
-### Setup
+### Install via npm (recommended)
+
+```bash
+npm install -g claude-workstation
+```
+
+A default config will be created at `~/.config/claude-workstation/projects.yaml` automatically.
+
+### Install from source
 
 ```bash
 # Clone
 git clone https://github.com/ConquerTime/claude-workstation.git
 cd claude-workstation
 
-# Install the script
+npm install -g .
+```
+
+### Manual install
+
+```bash
+git clone https://github.com/ConquerTime/claude-workstation.git
+cd claude-workstation
+
 cp claude-workstation ~/.local/bin/
 chmod +x ~/.local/bin/claude-workstation
 
-# Create your config
 mkdir -p ~/.config/claude-workstation
 cp examples/projects.yaml ~/.config/claude-workstation/projects.yaml
 ```
