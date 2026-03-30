@@ -127,7 +127,33 @@ projects:
 
 ### Adding a new project
 
-Just add an entry under `projects:` — no script changes needed:
+**Quick way** — run `--create` from your project directory, or use `--edit` to modify an existing project:
+
+```bash
+cd ~/projects/my-app
+claude-workstation --create
+
+# Custom name:
+claude-workstation --create my-custom-name
+```
+
+This prompts you to choose a template:
+
+| Template | Panes | Roles | Layout |
+|----------|-------|-------|--------|
+| 1 | 6 | Planner×2 + Coder×2 + Tool-Executor + Reviewer | 3+3 grid |
+| 2 | 8 | Planner×2 + Coder×4 + Tool-Executor + Reviewer | 4+4 grid |
+
+Then confirms and writes the entry to `~/.config/claude-workstation/projects.yaml`.
+
+To edit an existing project (rename or change layout):
+
+```bash
+claude-workstation --edit my-app
+# → prompts: rename and/or change template
+```
+
+**Manual way** — add an entry under `projects:` directly:
 
 ```yaml
 projects:

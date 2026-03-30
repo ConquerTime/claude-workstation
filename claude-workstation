@@ -5,6 +5,9 @@
 #   claude-workstation              # Interactive project picker
 #   claude-workstation myproject    # Launch or reattach project
 #   claude-workstation myproject --new  # Force new session
+#   claude-workstation --create          # Add project from current directory
+#   claude-workstation --create myname   # Add project with custom name
+#   claude-workstation --edit project    # Edit project name or layout template
 #   claude-workstation --list       # List configured projects
 #   claude-workstation --status     # Show active sessions
 #   claude-workstation --kill myproject  # Terminate session
@@ -15,14 +18,22 @@ set -euo pipefail
 
 CONFIG="${CLAUDE_WORKSTATION_CONFIG:-$HOME/.config/claude-workstation/projects.yaml}"
 
-if [[ ! -f "$CONFIG" ]]; then
+# Pre-scan: detect --create/--edit so guards can be bypassed appropriately
+_IS_CREATE=false
+for _arg in "$@"; do
+  [[ "$_arg" == "--create" ]] && _IS_CREATE=true && break
+done
+
+if [[ ! -f "$CONFIG" ]] && [[ "$_IS_CREATE" == false ]]; then
   echo "Config file not found: $CONFIG"
   echo "Create one: mkdir -p ~/.config/claude-workstation && cp examples/projects.yaml $CONFIG"
   exit 1
 fi
 
 command -v yq &>/dev/null || { echo "yq is required: brew install yq"; exit 1; }
-command -v tmux &>/dev/null || { echo "tmux is required: brew install tmux"; exit 1; }
+if [[ "$_IS_CREATE" == false ]]; then
+  command -v tmux &>/dev/null || { echo "tmux is required: brew install tmux"; exit 1; }
+fi
 
 SESSION_PREFIX="cw"
 
@@ -32,10 +43,25 @@ SESSION_PREFIX="cw"
 PROJECT_NAME=""
 NEW_SESSION=false
 KILL_TARGET=""
+DO_CREATE=false
+CREATE_NAME=""
+EDIT_TARGET=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --new) NEW_SESSION=true ;;
+    --create)
+      if [[ $# -gt 1 ]] && [[ "${2}" != --* ]]; then
+        shift
+        CREATE_NAME="$1"
+      fi
+      DO_CREATE=true
+      ;;
+    --edit)
+      shift
+      [[ $# -eq 0 ]] && echo "--edit requires a project name" && exit 1
+      EDIT_TARGET="$1"
+      ;;
     --kill)
       shift
       [[ $# -eq 0 ]] && echo "--kill requires a project name" && exit 1
@@ -61,6 +87,8 @@ Usage: claude-workstation [project] [options]
   --new           Force new session (kills existing one)
   --list,-l       List all configured projects
   --status,-s     Show active workstation sessions
+  --create [name]  Add project from current dir (prompts for template)
+  --edit project   Edit project name or layout template
   --kill project  Terminate a project's session
   --help,-h       Show this help
 
@@ -76,6 +104,188 @@ EOF
   esac
   shift
 done
+
+# ============================================================
+# create_project — Scaffold a new project entry in config
+# ============================================================
+create_project() {
+  local default_name
+  default_name=$(basename "$PWD")
+  local proj_name="${CREATE_NAME:-$default_name}"
+
+  if [[ ! "$proj_name" =~ ^[a-zA-Z][a-zA-Z0-9_-]*$ ]]; then
+    echo "Invalid project name: '$proj_name'"
+    echo "Names must start with a letter and contain only letters, digits, hyphens, underscores."
+    exit 1
+  fi
+
+  if [[ ! -f "$CONFIG" ]]; then
+    echo "Config not found. Creating: $CONFIG"
+    mkdir -p "$(dirname "$CONFIG")"
+    yq -n '.projects = {}' > "$CONFIG"
+  fi
+
+  if yq -e ".projects | has(\"${proj_name}\")" "$CONFIG" &>/dev/null; then
+    echo "Project '$proj_name' already exists in $CONFIG"
+    echo "Use a different name: claude-workstation --create my-other-name"
+    exit 1
+  fi
+
+  local proj_dir="$PWD"
+  echo ""
+  echo "Project name : $proj_name"
+  echo "Directory    : $proj_dir"
+  echo ""
+  echo "Select a template:"
+  echo "  1) 6-pane  — Planner×2 + Coder×2 + Tool-Executor + Reviewer  (3+3 grid)"
+  echo "  2) 8-pane  — Planner×2 + Coder×4 + Tool-Executor + Reviewer  (4+4 grid)"
+  echo ""
+  local template_choice
+  read -rp "Template [1-2]: " template_choice
+  if [[ "$template_choice" != "1" && "$template_choice" != "2" ]]; then
+    echo "Invalid selection" && exit 1
+  fi
+
+  local windows_expr pane_layout
+  if [[ "$template_choice" == "1" ]]; then
+    windows_expr='[{"name":"Planner-1","model":"opus"},{"name":"Planner-2","model":"opus"},{"name":"Coder-1","model":"sonnet"},{"name":"Coder-2","model":"sonnet"},{"name":"Tool-Executor","model":"sonnet"},{"name":"Reviewer","model":"opus"}]'
+    pane_layout="6 panes, 3+3 grid"
+  else
+    windows_expr='[{"name":"Planner-1","model":"opus"},{"name":"Planner-2","model":"opus"},{"name":"Coder-1","model":"sonnet"},{"name":"Coder-2","model":"sonnet"},{"name":"Coder-3","model":"sonnet"},{"name":"Coder-4","model":"sonnet"},{"name":"Tool-Executor","model":"sonnet"},{"name":"Reviewer","model":"opus"}]'
+    pane_layout="8 panes, 4+4 grid"
+  fi
+
+  echo ""
+  echo "Will add to $CONFIG:"
+  echo "  $proj_name: $proj_dir ($pane_layout)"
+  echo ""
+  local confirm
+  read -rp "Confirm? [y/N]: " confirm
+  [[ "$confirm" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 0; }
+
+  yq -i \
+    ".projects[\"${proj_name}\"].desc = \"${proj_name} project\" |
+     .projects[\"${proj_name}\"].dir = \"${proj_dir}\" |
+     .projects[\"${proj_name}\"].windows = ${windows_expr}" \
+    "$CONFIG"
+
+  echo ""
+  echo "Created project '${proj_name}'. Launch with: claude-workstation ${proj_name}"
+}
+
+# ============================================================
+# edit_project — Modify name or layout template of a project
+# ============================================================
+edit_project() {
+  local proj_name="$EDIT_TARGET"
+
+  # Verify project exists
+  yq -e ".projects | has(\"${proj_name}\")" "$CONFIG" &>/dev/null || {
+    echo "Project '$proj_name' not found in $CONFIG"
+    echo "Available: $(yq -r '.projects | keys | join(", ")' "$CONFIG")"
+    exit 1
+  }
+
+  local current_dir
+  current_dir=$(yq -r ".projects[\"${proj_name}\"].dir" "$CONFIG")
+  local current_pane_count
+  current_pane_count=$(yq -r ".projects[\"${proj_name}\"].windows | length" "$CONFIG")
+
+  echo ""
+  echo "Editing project: $proj_name"
+  echo "  Directory : $current_dir"
+  echo "  Panes     : $current_pane_count"
+  echo ""
+  echo "What would you like to change?"
+  echo "  1) Rename project"
+  echo "  2) Change layout template"
+  echo "  3) Both"
+  echo ""
+  local edit_choice
+  read -rp "Choice [1-3]: " edit_choice
+  if [[ ! "$edit_choice" =~ ^[123]$ ]]; then
+    echo "Invalid selection" && exit 1
+  fi
+
+  local new_name="$proj_name"
+
+  # Handle rename
+  if [[ "$edit_choice" == "1" || "$edit_choice" == "3" ]]; then
+    echo ""
+    read -rp "New project name [$proj_name]: " new_name
+    new_name="${new_name:-$proj_name}"
+    if [[ "$new_name" != "$proj_name" ]]; then
+      if [[ ! "$new_name" =~ ^[a-zA-Z][a-zA-Z0-9_-]*$ ]]; then
+        echo "Invalid project name: '$new_name'"
+        echo "Names must start with a letter and contain only letters, digits, hyphens, underscores."
+        exit 1
+      fi
+      if yq -e ".projects | has(\"${new_name}\")" "$CONFIG" &>/dev/null; then
+        echo "Project '$new_name' already exists in $CONFIG"
+        exit 1
+      fi
+    fi
+  fi
+
+  local windows_expr=""
+  local pane_layout=""
+
+  # Handle layout change
+  if [[ "$edit_choice" == "2" || "$edit_choice" == "3" ]]; then
+    echo ""
+    echo "Select a template:"
+    echo "  1) 6-pane  — Planner×2 + Coder×2 + Tool-Executor + Reviewer  (3+3 grid)"
+    echo "  2) 8-pane  — Planner×2 + Coder×4 + Tool-Executor + Reviewer  (4+4 grid)"
+    echo ""
+    local template_choice
+    read -rp "Template [1-2]: " template_choice
+    if [[ "$template_choice" != "1" && "$template_choice" != "2" ]]; then
+      echo "Invalid selection" && exit 1
+    fi
+    if [[ "$template_choice" == "1" ]]; then
+      windows_expr='[{"name":"Planner-1","model":"opus"},{"name":"Planner-2","model":"opus"},{"name":"Coder-1","model":"sonnet"},{"name":"Coder-2","model":"sonnet"},{"name":"Tool-Executor","model":"sonnet"},{"name":"Reviewer","model":"opus"}]'
+      pane_layout="6 panes, 3+3 grid"
+    else
+      windows_expr='[{"name":"Planner-1","model":"opus"},{"name":"Planner-2","model":"opus"},{"name":"Coder-1","model":"sonnet"},{"name":"Coder-2","model":"sonnet"},{"name":"Coder-3","model":"sonnet"},{"name":"Coder-4","model":"sonnet"},{"name":"Tool-Executor","model":"sonnet"},{"name":"Reviewer","model":"opus"}]'
+      pane_layout="8 panes, 4+4 grid"
+    fi
+  fi
+
+  # Summary
+  echo ""
+  echo "Changes to apply:"
+  [[ "$new_name" != "$proj_name" ]] && echo "  Name   : $proj_name → $new_name"
+  [[ -n "$windows_expr" ]] && echo "  Layout : $pane_layout"
+  echo ""
+  local confirm
+  read -rp "Confirm? [y/N]: " confirm
+  [[ "$confirm" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 0; }
+
+  # Apply layout change first (while key is still old name)
+  if [[ -n "$windows_expr" ]]; then
+    yq -i ".projects[\"${proj_name}\"].windows = ${windows_expr}" "$CONFIG"
+  fi
+
+  # Apply rename: copy to new key, delete old key
+  if [[ "$new_name" != "$proj_name" ]]; then
+    yq -i ".projects[\"${new_name}\"] = .projects[\"${proj_name}\"] | del(.projects[\"${proj_name}\"])" "$CONFIG"
+  fi
+
+  echo ""
+  echo "Updated project '${new_name}'. Launch with: claude-workstation ${new_name}"
+}
+
+# --create handling
+if [[ "$DO_CREATE" == true ]]; then
+  create_project
+  exit 0
+fi
+
+# --edit handling
+if [[ -n "$EDIT_TARGET" ]]; then
+  edit_project
+  exit 0
+fi
 
 # --kill handling
 if [[ -n "$KILL_TARGET" ]]; then
