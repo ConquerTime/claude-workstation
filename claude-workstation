@@ -376,7 +376,7 @@ for ((i=0; i<PANE_COUNT; i++)); do
   PANE_SKIP_PERMS+=("$p_skip")
 done
 
-# Create tmux session (first pane)
+# Create tmux session (first pane). Window index is 0 (not 1).
 tmux new-session -d -s "$SESSION_NAME" -c "${PANE_DIRS[0]}" -x "$(tput cols)" -y "$(tput lines)"
 
 # Enable mouse support
@@ -384,7 +384,7 @@ tmux set-option -t "$SESSION_NAME" mouse on
 
 # Prevent apps from overriding pane/window titles
 tmux set-option -t "$SESSION_NAME" allow-rename off
-tmux set-window-option -t "$SESSION_NAME" automatic-rename off
+tmux set-window-option -t "${SESSION_NAME}:0" automatic-rename off
 
 # Two-row N-column layout: top row = first half, bottom row = second half
 top_count=$(( (PANE_COUNT + 1) / 2 ))
@@ -392,21 +392,21 @@ bottom_count=$(( PANE_COUNT - top_count ))
 
 # Step 1: Create top row columns (split-h), then equalize
 for ((i=1; i<top_count; i++)); do
-  tmux split-window -h -t "${SESSION_NAME}:1" -c "${PANE_DIRS[$i]}"
-  tmux select-layout -t "${SESSION_NAME}:1" even-horizontal
+  tmux split-window -h -t "${SESSION_NAME}:0" -c "${PANE_DIRS[$i]}"
+  tmux select-layout -t "${SESSION_NAME}:0" even-horizontal
 done
 
 # Step 2: Split bottom row from last column to first (avoids index shift)
 for ((i=bottom_count-1; i>=0; i--)); do
-  top_pane_idx=$((i+1))
+  top_pane_idx=$i
   src_idx=$((top_count + i))
-  tmux split-window -v -t "${SESSION_NAME}:1.${top_pane_idx}" -c "${PANE_DIRS[$src_idx]}"
+  tmux split-window -v -t "${SESSION_NAME}:0.${top_pane_idx}" -c "${PANE_DIRS[$src_idx]}"
 done
 
-# Step 3: Map config index → actual tmux pane index
+# Step 3: Map config index → actual tmux pane index (tmux pane_index is 0-based)
 # After split-v from back to front, panes interleave: top1, bottom1, top2, bottom2, ...
 PANE_MAP=()
-pane_cursor=1
+pane_cursor=0
 for ((col=0; col<top_count; col++)); do
   PANE_MAP[$col]=$pane_cursor
   ((pane_cursor++))
@@ -420,20 +420,20 @@ done
 for ((i=0; i<PANE_COUNT; i++)); do
   cmd="claude --model ${PANE_MODELS[$i]} --name '${PANE_NAMES[$i]}'"
   [[ "${PANE_SKIP_PERMS[$i]}" == "true" ]] && cmd="$cmd --dangerously-skip-permissions"
-  tmux send-keys -t "${SESSION_NAME}:1.${PANE_MAP[$i]}" "$cmd" C-m
+  tmux send-keys -t "${SESSION_NAME}:0.${PANE_MAP[$i]}" "$cmd" C-m
 done
 
 # Set @label on each pane (immune to app title overrides)
 for ((i=0; i<PANE_COUNT; i++)); do
-  tmux set-option -p -t "${SESSION_NAME}:1.${PANE_MAP[$i]}" @label "${PANE_NAMES[$i]}"
+  tmux set-option -p -t "${SESSION_NAME}:0.${PANE_MAP[$i]}" @label "${PANE_NAMES[$i]}"
 done
 
 # Display pane labels in border
-tmux set-window-option -t "$SESSION_NAME" pane-border-status top
-tmux set-window-option -t "$SESSION_NAME" pane-border-format " #[fg=cyan,bold]#{@label}#[default] "
+tmux set-window-option -t "${SESSION_NAME}:0" pane-border-status top
+tmux set-window-option -t "${SESSION_NAME}:0" pane-border-format " #[fg=cyan,bold]#{@label}#[default] "
 
 # Focus first pane
-tmux select-pane -t "${SESSION_NAME}:1.1"
+tmux select-pane -t "${SESSION_NAME}:0.0"
 
 DESC=$(yq -r ".projects.\"$PROJECT_NAME\".desc" "$CONFIG")
 echo "Workstation ready: $PROJECT_NAME — $DESC ($PANE_COUNT panes, ${top_count}x2 grid)"
